@@ -263,7 +263,7 @@ function mapBBSStandings(rows) {
 
 // match: home/away.name, home/away.short_name, kickoff_utc, status, score.home/away, round
 const BBS_STATUS = {
-  'scheduled':'NS','in_progress':'1H','halftime':'HT',
+  'scheduled':'NS','in_progress':'1H','live':'1H','halftime':'HT',
   'finished':'FT','postponed':'PST','cancelled':'CANC','suspended':'SUSP'
 };
 function mapBBSMatch(m, fallbackRound) {
@@ -435,20 +435,23 @@ async function loadAll(){
       apiFetch(`/matches?sport=football&league=${LEAGUE}&limit=15`)
     ]);
 
-    if(!sd.standings?.[0]?.rows?.length) throw new Error('Standings vuoto');
+    // BBS REST API: sd.standings è un array piatto [{rank,team_name,...}]
+    const sArr=Array.isArray(sd.standings)?sd.standings:(sd.standings?.rows||sd.data||[]);
+    if(!sArr.length) throw new Error('Standings vuoto');
 
     // Classifica
-    const standings=mapBBSStandings(sd.standings[0].rows);
+    const standings=mapBBSStandings(sArr);
 
     // Giornata in corso: partite finite + eventuali live nell'upcoming
-    const finArr=Array.isArray(fd)?fd:[];
-    const liveArr=(Array.isArray(ud)?ud:[]).filter(m=>m.status==='in_progress');
+    const finArr=Array.isArray(fd)?fd:(fd?.matches||fd?.data||[]);
+    const udAll =Array.isArray(ud) ?ud :(ud?.matches ||ud?.data ||[]);
+    const liveArr=udAll.filter(m=>m.status==='in_progress'||m.status==='live');
     const curArr=[...liveArr,...finArr];
     const curRound=finArr[0]?.round||'';
     const curFx=curArr.map(m=>mapBBSMatch(m,curRound));
 
     // Prossima giornata: primo cluster di partite schedulate
-    const schArr=(Array.isArray(ud)?ud:[]).filter(m=>m.status==='scheduled');
+    const schArr=udAll.filter(m=>m.status==='scheduled');
     const groups=clusterMatchdays(schArr);
     const nxtArr=groups[0]||[];
     const nxtRoundNum=parseInt((curRound.match(/(\d+)$/)||[])[1]||0)+1;
