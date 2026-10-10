@@ -221,46 +221,13 @@ body{
 </div>
 
 <script>
-/* ── ABBREVIAZIONI CLASSICHE SERIE A ── */
-const ABBR = {
-  'Inter':'INT','AC Milan':'MIL','Napoli':'NAP','Juventus':'JUV',
-  'Atalanta':'ATA','Lazio':'LAZ','Roma':'ROM','Fiorentina':'FIO',
-  'Torino':'TOR','Bologna':'BOL','Udinese':'UDI','Genoa':'GEN',
-  'Cagliari':'CAG','Monza':'MON','Empoli':'EMP','Venezia':'VEN',
-  'Lecce':'LEC','Como':'COM','Parma':'PAR','Hellas Verona':'VER',
-};
-// Nomi estesi usati da varie API (BBS, football-data, ecc.)
-const ABBR_EXTRA = {
-  'Internazionale':'INT','FC Internazionale':'INT','Inter':'INT',
-  'AS Roma':'ROM',
-  'SS Lazio':'LAZ',
-  'ACF Fiorentina':'FIO','Fiorentina':'FIO',
-  'SSC Napoli':'NAP','Napoli':'NAP',
-  'Juventus FC':'JUV','Juventus':'JUV',
-  'AC Milan':'MIL',
-  'Atalanta BC':'ATA','Atalanta':'ATA',
-  'Torino FC':'TOR',
-  'Bologna FC 1909':'BOL','Bologna':'BOL',
-  'Udinese Calcio':'UDI','Udinese':'UDI',
-  'Genoa CFC':'GEN','Genoa':'GEN',
-  'Cagliari Calcio':'CAG','Cagliari':'CAG',
-  'AC Monza':'MON','Monza':'MON',
-  'Empoli FC':'EMP','Empoli':'EMP',
-  'Venezia FC':'VEN','Venezia':'VEN',
-  'US Lecce':'LEC','Lecce':'LEC',
-  'Como 1907':'COM','Como':'COM',
-  'Parma Calcio 1913':'PAR','Parma':'PAR',
-  'Hellas Verona FC':'VER','Hellas Verona':'VER',
-};
-// Usa tla dal dato API se disponibile, poi ABBR, poi ABBR_EXTRA, poi fallback 3 char
-const ab = (n, tla) => tla || ABBR[n] || ABBR_EXTRA[n] || n.slice(0,3).toUpperCase();
-
-/* ── CONFIGURAZIONE BIGBALLSDATA.COM ──────────────────────────────────────────
-   Piano free: 250 req/day (500 con GitHub), 100 req/min, Serie A corrente inclusa
-   Registrati su bigballsdata.com per ottenere la chiave
-   ─────────────────────────────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════════
+   CONFIGURAZIONE — inserisci il tuo token bigballsdata.com
+   Piano free: 250 req/day, CORS abilitato, Serie A 2026-27 inclusa
+   ══════════════════════════════════════════════════════════════════════════════ */
 const BBS_KEY  = 'bbs_live_00000FDaWzqp09ZUXVSN4Nt8H5Pml5luwod485DcZJWVaAkv';
 const BBS_BASE = 'https://api.bigballsdata.com/v1';
+const LEAGUE   = 'serie_a';
 
 async function apiFetch(path) {
   const r = await fetch(BBS_BASE + path, {
@@ -275,47 +242,40 @@ async function apiFetch(path) {
   return d;
 }
 
-/* Mappa standings bigballsdata → formato renderer */
-function mapBBSStandings(data) {
-  return data.map(e => ({
-    rank: e.position,
-    team: {
-      name: e.team?.short_name || e.team?.name || e.name || '–',
-      tla:  e.team?.short_name
-    },
+/* ── ADATTATORI — struttura BBS → formato renderer ── */
+
+// standings[0].rows[]: rank, team_name, wins, ties, losses, games_played, points_for, points_against
+function mapBBSStandings(rows) {
+  return rows.map(e => ({
+    rank: e.rank,
+    team: { name: e.team_name, tla: null },
     all: {
-      played: e.played ?? 0,
-      win:    e.won   ?? 0,
-      draw:   e.drawn ?? 0,
-      lose:   e.lost  ?? 0,
-      goals:  { for: e.goals_for ?? 0, against: e.goals_against ?? 0 }
+      played: e.games_played,
+      win:    e.wins,
+      draw:   e.ties,
+      lose:   e.losses,
+      goals:  { for: e.points_for, against: e.points_against }
     },
-    goalsDiff: e.goal_difference ?? 0,
-    points:    e.points ?? 0
+    goalsDiff: e.points_for - e.points_against,
+    points:    e.wins * 3 + e.ties
   }));
 }
 
+// match: home/away.name, home/away.short_name, kickoff_utc, status, score.home/away, round
 const BBS_STATUS = {
-  'scheduled':   'NS',
-  'in_progress': '1H',
-  'halftime':    'HT',
-  'finished':    'FT',
-  'postponed':   'PST',
-  'cancelled':   'CANC',
-  'suspended':   'SUSP'
+  'scheduled':'NS','in_progress':'1H','halftime':'HT',
+  'finished':'FT','postponed':'PST','cancelled':'CANC','suspended':'SUSP'
 };
-
-/* Mappa match bigballsdata → formato renderer */
-function mapBBSMatch(m, round) {
+function mapBBSMatch(m, fallbackRound) {
   return {
     fixture: {
       status: { short: BBS_STATUS[m.status] || 'NS', elapsed: m.minute ?? null },
       date: m.kickoff_utc
     },
-    league: { round },
+    league: { round: m.round || fallbackRound || '' },
     teams: {
-      home: { name: m.home?.short_name || m.home?.name || '–', tla: m.home?.short_name },
-      away: { name: m.away?.short_name || m.away?.name || '–', tla: m.away?.short_name }
+      home: { name: m.home.name, tla: m.home.short_name },
+      away: { name: m.away.name, tla: m.away.short_name }
     },
     goals: {
       home: m.score?.home ?? null,
@@ -324,18 +284,17 @@ function mapBBSMatch(m, round) {
   };
 }
 
-/* Raggruppa matches in giornate per prossimità temporale (gap > 4gg = nuova giornata) */
-function clusterMatchdays(matches) {
-  if (!matches.length) return [];
-  const s = [...matches].sort((a,b) => new Date(a.kickoff_utc)-new Date(b.kickoff_utc));
-  const gs = [[s[0]]];
-  for (let i = 1; i < s.length; i++) {
-    const gap = (new Date(s[i].kickoff_utc) - new Date(s[i-1].kickoff_utc)) / 86400000;
-    if (gap <= 4) gs[gs.length-1].push(s[i]);
-    else gs.push([s[i]]);
-  }
-  return gs;
-}
+/* ── ABBREVIAZIONI ── */
+const ABBR = {
+  'Inter':'INT','AC Milan':'MIL','Napoli':'NAP','Juventus':'JUV',
+  'Atalanta':'ATA','Lazio':'LAZ','Roma':'ROM','AS Roma':'ROM',
+  'Fiorentina':'FIO','Torino':'TOR','Bologna':'BOL','Udinese':'UDI',
+  'Genoa':'GEN','Cagliari':'CAG','Monza':'MON','Empoli':'EMP',
+  'Venezia FC':'VEN','Venezia':'VEN','Lecce':'LEC','Como 1907':'COM',
+  'Como':'COM','Parma':'PAR','Hellas Verona':'VER','Frosinone':'FRO',
+  'Sassuolo':'SAS','Inter Milan':'INT',
+};
+const ab = (n, tla) => tla || ABBR[n] || n.slice(0,3).toUpperCase();
 
 /* ── COSTANTI STATUS ── */
 const LIVE_ST = new Set(['1H','HT','2H','ET','P','BT']);
@@ -346,9 +305,21 @@ function fmtTime(iso){
   const d = new Date(iso);
   return `${DAYS_IT[d.getDay()]} ${d.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}`;
 }
-
+function isToday(iso){
+  const d=new Date(iso),n=new Date();
+  return d.getDate()===n.getDate()&&d.getMonth()===n.getMonth()&&d.getFullYear()===n.getFullYear();
+}
+function fmtMobileDate(iso){
+  const d=new Date(iso);
+  if(isToday(iso)) return d.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
+  return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+}
 function zone(r){
   if(r<=4)return'ucl';if(r===5)return'uel';if(r===6)return'uecl';if(r>=18)return'rel';return'';
+}
+function fmtRound(round){
+  const m=(round||'').match(/(\d+)$/);
+  return m?`${m[1]}ª Giornata`:round||'';
 }
 
 /* ── RENDER CLASSIFICA ── */
@@ -359,7 +330,8 @@ function renderStandings(rows){
     <div class="tn2">N</div><div class="tl">P</div><div class="tgd">DR</div>
   </div>`;
   const body=rows.map(e=>{
-    const z=zone(e.rank), gds=e.goalsDiff>0?'+'+e.goalsDiff:''+e.goalsDiff, isRoma=e.team.name.toLowerCase().includes('roma');
+    const z=zone(e.rank),gds=e.goalsDiff>0?'+'+e.goalsDiff:''+e.goalsDiff;
+    const isRoma=e.team.name.toLowerCase().includes('roma');
     return `<div class="trow dr ${z}${isRoma?' roma':''}">
       <div class="tp">${e.rank}</div>
       <div class="tt"><span>${e.team.name}</span></div>
@@ -374,51 +346,36 @@ function renderStandings(rows){
   document.getElementById('tbl').innerHTML=hd+body;
 }
 
-function isToday(iso){
-  const d=new Date(iso),n=new Date();
-  return d.getDate()===n.getDate()&&d.getMonth()===n.getMonth()&&d.getFullYear()===n.getFullYear();
-}
-function fmtMobileDate(iso){
-  const d=new Date(iso);
-  if(isToday(iso)) return d.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
-  return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
-}
-
 /* ── RENDER PARTITE ── */
-function renderFixtures(cardId, roundId, lblMId, fixtures){
-  if(!fixtures?.length) return;
+function renderFixtures(cardId,roundId,lblMId,fixtures){
+  if(!fixtures?.length){
+    document.getElementById(cardId).innerHTML='<div class="spin-state" style="color:var(--mut);font-size:12px">Nessuna partita</div>';
+    return;
+  }
+  const round=fixtures[0]?.league?.round||'';
+  const num=(round.match(/(\d+)$/)||[])[1]||'';
+  document.getElementById(roundId).textContent=num?`${num}ª Giornata`:'';
+  document.getElementById(lblMId).textContent=`Giornata ${num}`;
 
-  const round = fixtures[0]?.league?.round || '';
-  const num   = (round.match(/(\d+)$/) || [])[1] || '';
-  document.getElementById(roundId).textContent  = num ? `${num}ª Giornata` : '';
-  document.getElementById(lblMId).textContent   = `Giornata ${num}`;
-
-  const rows = fixtures.map(f => {
-    const st   = f.fixture.status.short;
-    const isL  = LIVE_ST.has(st);
-    const isFt = FT_ST.has(st);
-    const hs   = f.goals.home;
-    const as_  = f.goals.away;
-
-    /* badge desktop */
+  const rows=fixtures.map(f=>{
+    const st=f.fixture.status.short;
+    const isL=LIVE_ST.has(st),isFt=FT_ST.has(st);
+    const hs=f.goals.home,as_=f.goals.away;
     let badge;
-    if      (isL && st==='HT') badge = 'HT';
-    else if (isL)              badge = (f.fixture.status.elapsed??'•')+"'";
-    else if (isFt)             badge = 'FT';
-    else                       badge = fmtTime(f.fixture.date);
-
-    /* desktop */
-    const score = (isL||isFt) ? `${hs??'–'} – ${as_??'–'}` : 'vs';
-    const bCls  = isL ? 'live' : isFt ? 'ft' : 'ns';
-
-    /* mobile compact */
-    const mTeams = `${ab(f.teams.home.name, f.teams.home.tla)} - ${ab(f.teams.away.name, f.teams.away.tla)}`;
-    const mLive  = isL ? 'mm-live' : '';
-    const mRight = (isL||isFt)
-      ? `<span class="mm-s ${mLive}">${hs??'–'}-${as_??'–'}</span>`
-      : `<span class="mm-date">${fmtMobileDate(f.fixture.date)}</span>`;
-
+    if(isL&&st==='HT')badge='HT';
+    else if(isL)badge=(f.fixture.status.elapsed??'•')+"'";
+    else if(isFt)badge='FT';
+    else badge=fmtTime(f.fixture.date);
+    const score=(isL||isFt)?`${hs??'–'} – ${as_??'–'}`:'vs';
+    const bCls=isL?'live':isFt?'ft':'ns';
+    const mTeams=`${ab(f.teams.home.name,f.teams.home.tla)} - ${ab(f.teams.away.name,f.teams.away.tla)}`;
+    const isScored=isL||isFt;
+    const mScore=isScored?`${hs??'–'}-${as_??'–'}`:'';
+    const mLive=isL?'mm-live':'';
     const isRoma=f.teams.home.name.toLowerCase().includes('roma')||f.teams.away.name.toLowerCase().includes('roma');
+    const mRight=isScored
+      ?`<span class="mm-s ${mLive}">${mScore}</span>`
+      :`<span class="mm-date">${fmtMobileDate(f.fixture.date)}</span>`;
     return `<div class="mrow ${isL?'live':''}${isRoma?' roma':''}">
       <div class="m-desk">
         <div class="mh">${f.teams.home.name}</div>
@@ -426,111 +383,106 @@ function renderFixtures(cardId, roundId, lblMId, fixtures){
         <div class="ma">${f.teams.away.name}</div>
         <div class="mbg ${bCls}">${badge}</div>
       </div>
-      <div class="m-mob">
+      <div class="m-mob ${isScored?'':'no-score'}">
         <span class="mm-t">${mTeams}</span>
         ${mRight}
       </div>
     </div>`;
   }).join('');
+  document.getElementById(cardId).innerHTML=rows;
+}
 
-  document.getElementById(cardId).innerHTML = rows;
+/* ── RAGGRUPPA PER GIORNATA (cluster temporale ≤4gg) ── */
+function clusterMatchdays(matches){
+  if(!matches.length)return[];
+  const s=[...matches].sort((a,b)=>new Date(a.kickoff_utc)-new Date(b.kickoff_utc));
+  const gs=[[s[0]]];
+  for(let i=1;i<s.length;i++){
+    const gap=(new Date(s[i].kickoff_utc)-new Date(s[i-1].kickoff_utc))/86400000;
+    if(gap<=4)gs[gs.length-1].push(s[i]);
+    else gs.push([s[i]]);
+  }
+  return gs;
 }
 
 /* ── INIT & AUTO-REFRESH ── */
-let _rt = null;
+let _rt=null;
 
-function setStatus(s, msg) {
-  document.getElementById('dot').className = 'dot ' + s;
-  document.getElementById('stTxt').textContent = msg;
+function setStatus(s,msg){
+  document.getElementById('dot').className='dot '+s;
+  document.getElementById('stTxt').textContent=msg;
 }
-
-function showSpinners() {
-  ['tbl','curCard','nxtCard'].forEach(id => {
-    document.getElementById(id).innerHTML =
+function showSpinners(){
+  ['tbl','curCard','nxtCard'].forEach(id=>{
+    document.getElementById(id).innerHTML=
       '<div class="spin-state"><div class="spinner"></div></div>';
   });
 }
-
-function hasLive(fx) {
-  return (fx||[]).some(f => LIVE_ST.has(f.fixture.status.short));
+function hasLive(fx){
+  return(fx||[]).some(f=>LIVE_ST.has(f.fixture.status.short));
 }
 
-async function loadAll() {
-  setStatus('busy', 'Aggiornamento…');
+async function loadAll(){
+  setStatus('busy','Aggiornamento…');
   showSpinners();
-  if (_rt) clearTimeout(_rt);
+  if(_rt)clearTimeout(_rt);
 
-  try {
-    // 2 chiamate parallele: classifica + partite recenti/prossime
-    const [sd, md] = await Promise.all([
-      apiFetch('/v1/standings?league=seriea'),
-      apiFetch('/v1/matches?sport=football&league=seriea&limit=25')
+  try{
+    // 3 chiamate parallele
+    const[sd,fd,ud]=await Promise.all([
+      apiFetch(`/standings?league=${LEAGUE}`),
+      apiFetch(`/matches?sport=football&league=${LEAGUE}&status=finished&limit=10`),
+      apiFetch(`/matches?sport=football&league=${LEAGUE}&limit=15`)
     ]);
 
-    if (!sd.data?.length) throw new Error('Nessun dato classifica (standings vuoto)');
+    if(!sd.standings?.[0]?.rows?.length) throw new Error('Standings vuoto');
 
-    // Standings
-    const standings = mapBBSStandings(sd.data);
-    const gamesPlayed = Math.max(...standings.map(e => e.all.played));
+    // Classifica
+    const standings=mapBBSStandings(sd.standings[0].rows);
 
-    // Raggruppa le partite in giornate per prossimità di date
-    const allMatches = md.data || [];
-    const groups = clusterMatchdays(allMatches);
+    // Giornata in corso: partite finite + eventuali live nell'upcoming
+    const finArr=Array.isArray(fd)?fd:[];
+    const liveArr=(Array.isArray(ud)?ud:[]).filter(m=>m.status==='in_progress');
+    const curArr=[...liveArr,...finArr];
+    const curRound=finArr[0]?.round||'';
+    const curFx=curArr.map(m=>mapBBSMatch(m,curRound));
 
-    // Giornata in corso: ultimo cluster con partite finite o live
-    let curIdx = -1;
-    for (let i = groups.length - 1; i >= 0; i--) {
-      if (groups[i].some(m => m.status === 'finished' || m.status === 'in_progress')) {
-        curIdx = i; break;
-      }
-    }
-    // Prossima giornata: primo cluster dopo curIdx con partite programmate
-    let nxtIdx = -1;
-    for (let i = curIdx + 1; i < groups.length; i++) {
-      if (groups[i].some(m => m.status === 'scheduled')) {
-        nxtIdx = i; break;
-      }
-    }
-    // Fallback se non ci sono ancora partite giocate
-    if (curIdx === -1) { curIdx = 0; nxtIdx = 1; }
-
-    const curGroup = groups[curIdx] || [];
-    const nxtGroup = nxtIdx >= 0 ? (groups[nxtIdx] || []) : [];
-    const curRound  = `Regular Season - ${gamesPlayed}`;
-    const nxtRound  = `Regular Season - ${gamesPlayed + 1}`;
-
-    const curFx = curGroup.map(m => mapBBSMatch(m, curRound));
-    const nxtFx = nxtGroup.map(m => mapBBSMatch(m, nxtRound));
+    // Prossima giornata: primo cluster di partite schedulate
+    const schArr=(Array.isArray(ud)?ud:[]).filter(m=>m.status==='scheduled');
+    const groups=clusterMatchdays(schArr);
+    const nxtArr=groups[0]||[];
+    const nxtRoundNum=parseInt((curRound.match(/(\d+)$/)||[])[1]||0)+1;
+    const nxtRound=nxtArr[0]?.round||`Regular Season - ${nxtRoundNum}`;
+    const nxtFx=nxtArr.map(m=>mapBBSMatch(m,nxtRound));
 
     renderStandings(standings);
-    document.getElementById('standingsRound').textContent = fmtRound(curRound);
-    renderFixtures('curCard', 'curRound', 'curLblM', curFx);
-    renderFixtures('nxtCard', 'nxtRound', 'nxtLblM', nxtFx);
+    document.getElementById('standingsRound').textContent=fmtRound(curRound);
+    renderFixtures('curCard','curRound','curLblM',curFx);
+    renderFixtures('nxtCard','nxtRound','nxtLblM',nxtFx);
 
-    const t = new Date();
-    setStatus('ok', `Agg. ${t.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}`);
+    const t=new Date();
+    setStatus('ok',`Agg. ${t.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}`);
 
-    // Live → aggiorna ogni 60s, altrimenti ogni 5 min
-    _rt = setTimeout(loadAll, hasLive(curFx) ? 60_000 : 300_000);
+    // Live → 2 min, altrimenti 10 min (resta dentro i 250 req/day)
+    _rt=setTimeout(loadAll,hasLive(curFx)?120_000:600_000);
 
-  } catch(err) {
-    const msg = err.message || 'Errore sconosciuto';
-    setStatus('err', msg);
-    console.error('[Serie A Roma]', err);
-    ['tbl','curCard','nxtCard'].forEach(id => {
-      document.getElementById(id).innerHTML =
+  }catch(err){
+    const msg=err.message||'Errore sconosciuto';
+    setStatus('err',msg);
+    console.error('[Serie A Roma]',err);
+    ['tbl','curCard','nxtCard'].forEach(id=>{
+      document.getElementById(id).innerHTML=
         `<div class="spin-state" style="flex-direction:column;gap:10px;padding:24px;text-align:center">
           <div style="font-size:22px">⚠️</div>
           <div style="font-size:11px;color:var(--red);line-height:1.5;max-width:220px">${msg}</div>
           <button onclick="loadAll()" style="background:none;border:1px solid var(--bdr);color:var(--mut);cursor:pointer;border-radius:6px;padding:5px 14px;font-size:11px;font-family:inherit;margin-top:4px">↻ Riprova</button>
         </div>`;
     });
-    _rt = setTimeout(loadAll, 120_000);
+    _rt=setTimeout(loadAll,120_000);
   }
 }
 
 loadAll();
-
 </script>
 </body>
 </html>
